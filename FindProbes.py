@@ -14,7 +14,7 @@ def predictRNAFold(kmers):
     probes = list()
     for kmer in kmers:
         pred = RNA.fold(kmer.seq)
-        probes.append(Probe(pred[1], kmer.gc, kmer.seq, pred[0]))
+        probes.append(Probe(round(pred[1], 2), kmer.gc, kmer.seq, pred[0]))
 
     return probes
 
@@ -54,7 +54,7 @@ def main():
             kmers += [block[i:i+k] for i in range(0, len(block) - k + 1)]
 
         #TODO: filter kmer with given GC limits.
-        probes = [Probe(None, GC(kmer), kmer, None) for kmer in kmers]
+        probes = [Probe(None, round(GC(kmer), 2), kmer, None) for kmer in kmers]
 
         if not args.min_gc is None:
             probes = list(filter(lambda x: x.gc > args.min_gc, probes))
