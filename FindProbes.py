@@ -2,12 +2,21 @@
 import sys
 import argparse
 from concurrent import futures
+from collections import namedtuple
 
 import RNA
 from Bio import SeqIO
+from Bio.SeqUtils import GC
+
+Probe = namedtuple('Probe', ['mfe', 'gc', 'seq', 'ss'])
 
 def predictRNAFold(kmers):
-    return [RNA.fold(kmer) + [kmer,] for kmer in kmers]
+    probes = list()
+    for kmer in kmers:
+        pred = RNA.fold(kmer.seq)
+        probes.append(Probe(pred[1], kmer.gc, kmer.seq, pred[0]))
+
+    return probes
 
 def chunks(lst, n):
     """Yield successive n-sized chunks from lst."""
@@ -29,25 +38,43 @@ def main():
                             help="Number of process to folding RNA.")
     userInput.add_argument('-m', '--min-mfe', type=int, default=None,
                             help="The minimum allowed minimum free energy (MFE)")
-    userInput.add_argument('-g', '--min_GC', default=20, type=int,
-                           help='The minimum allowed percent G + C, default is 20')
-    userInput.add_argument('-G', '--max_GC', default=80, type=int,
-                           help='The maximum allowed percent  G + C, default is 80')
+    userInput.add_argument('-g', '--min_GC', dest = "min_gc", default=None, type=int,
+                           help='The minimum allowed percent G + C')
+    userInput.add_argument('-G', '--max_GC', dest = "max_gc", default=None, type=int,
+                           help='The maximum allowed percent G + C')
     args = userInput.parse_args()
 
     for seq_record in SeqIO.parse(args.file, 'fasta'):
+        # Get anti-sense strand
         block = str(seq_record.seq.reverse_complement()).upper()
-        kmers = list()
-        for k in range(args.min_length, args.max_length):
-            kmers += [block[i:i+k] for i in range(0, len(block) - k + 1)]
-        with futures.ProcessPoolExecutor(args.process) as executor:
-            res = executor.map(predictRNAFold, list(chunks(kmers, args.process)))
-        predicts = flatten(res)
-        predicts.sort(key=lambda x: x[1], reverse=True)
 
-        for pred in predicts:
-            sys.stdout.write("{seqid},{mfe},{kmer},{ss}\n".format(
-                mfe = pred[1], kmer = pred[2], ss = pred[0],
+        # Generage all possible k-mers.
+        kmers = list()
+        for k in range(args.min_length, args.max_length + 1):
+            kmers += [block[i:i+k] for i in range(0, len(block) - k + 1)]
+
+        #TODO: filter kmer with given GC limits.
+        probes = [Probe(None, GC(kmer), kmer, None) for kmer in kmers]
+
+        if not args.min_gc is None:
+            probes = list(filter(lambda x: x.gc > args.min_gc, probes))
+        if not args.max_gc is None:
+            probes = list(filter(lambda x: x.gc < args.max_gc, probes))
+
+        # Parallel computing
+        with futures.ProcessPoolExecutor(args.process) as executor:
+            res = executor.map(predictRNAFold, list(chunks(probes, args.process)))
+
+        # Combine and sort results
+        probes = flatten(res)
+        if not args.min_mfe is None:
+            probes = list(filter(lambda x: x.mfe > args.min_mfe, probes))
+        probes.sort(key=lambda x: x.mfe, reverse=True)
+
+        # Output
+        for probe in probes:
+            sys.stdout.write("{seqid},{mfe},{gc},{kmer},{ss}\n".format(
+                mfe = probe.mfe, gc = probe.gc, kmer = probe.seq, ss = probe.ss,
                 seqid = seq_record.id
             ))
 
