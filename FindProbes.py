@@ -51,8 +51,7 @@ def main():
         sys.stdout.write("seqid,mfe,gc,tm,kmer,ss\n")
 
     for seq_record in SeqIO.parse(args.file, 'fasta'):
-        # Get anti-sense strand
-        block = str(seq_record.seq.reverse_complement()).upper()
+        block = str(seq_record.seq).upper()
 
         # Generage all possible k-mers.
         kmers = list()
