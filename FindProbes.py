@@ -6,15 +6,16 @@ from collections import namedtuple
 
 import RNA
 from Bio import SeqIO
-from Bio.SeqUtils import GC
+from Bio.SeqUtils import GC, MeltingTemp
 
-Probe = namedtuple('Probe', ['mfe', 'gc', 'seq', 'ss'])
+Probe = namedtuple('Probe', ['mfe', 'gc', 'tm', 'seq', 'ss'])
+NNTABLE = MeltingTemp.RNA_NN3
 
 def predictRNAFold(kmers):
     probes = list()
     for kmer in kmers:
         pred = RNA.fold(kmer.seq)
-        probes.append(Probe(round(pred[1], 2), kmer.gc, kmer.seq, pred[0]))
+        probes.append(Probe(round(pred[1], 2), kmer.gc, kmer.tm, kmer.seq, pred[0]))
 
     return probes
 
@@ -42,7 +43,12 @@ def main():
                            help='The minimum allowed percent G + C')
     userInput.add_argument('-G', '--max_GC', dest = "max_gc", default=None, type=int,
                            help='The maximum allowed percent G + C')
+    userInput.add_argument('-H', '--header', default=False, action="store_true",
+                            help='Write a header line to csv outputs.')
     args = userInput.parse_args()
+
+    if args.header:
+        sys.stdout.write("seqid,mfe,gc,tm,kmer,ss\n")
 
     for seq_record in SeqIO.parse(args.file, 'fasta'):
         # Get anti-sense strand
@@ -53,8 +59,13 @@ def main():
         for k in range(args.min_length, args.max_length + 1):
             kmers += [block[i:i+k] for i in range(0, len(block) - k + 1)]
 
-        #TODO: filter kmer with given GC limits.
-        probes = [Probe(None, round(GC(kmer), 2), kmer, None) for kmer in kmers]
+        # Nearest neighbor thermodynamic Tm predictions for DNA do not really
+        # extend beyond duplexes of ~60 bp, so the Tm values at 120 would not
+        # be accurate.
+        probes = [Probe(
+            None, round(GC(kmer), 2),
+            round(MeltingTemp.Tm_NN(kmer, nn_table = NNTABLE), 2),
+            kmer, None) for kmer in kmers]
 
         if not args.min_gc is None:
             probes = list(filter(lambda x: x.gc > args.min_gc, probes))
@@ -73,9 +84,9 @@ def main():
 
         # Output
         for probe in probes:
-            sys.stdout.write("{seqid},{mfe},{gc},{kmer},{ss}\n".format(
+            sys.stdout.write("{seqid},{mfe},{gc},{tm},{kmer},{ss}\n".format(
                 mfe = probe.mfe, gc = probe.gc, kmer = probe.seq, ss = probe.ss,
-                seqid = seq_record.id
+                seqid = seq_record.id, tm = probe.tm
             ))
 
 
