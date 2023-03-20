@@ -1,22 +1,53 @@
 #!/usr/bin/env python
 import sys
+import os
 import argparse
+import subprocess
+import csv
 from concurrent import futures
 from collections import namedtuple
 
 import RNA
 from Bio import SeqIO
-from Bio.SeqUtils import GC, MeltingTemp
+from Bio.Seq import Seq
+from Bio.SeqUtils import gc_fraction, MeltingTemp
 
-Probe = namedtuple('Probe', ['mfe', 'gc', 'tm', 'seq', 'ss'])
+Probe = namedtuple('Probe', ['mfe', 'gc', 'tm', 'seq', 'AB', 'AA', 'BB', 'A', 'B'])
 NNTABLE = MeltingTemp.RNA_NN3
+
+def runRNACofold(probes):
+    # Run RNAcofold for antisense and sense probes
+    cofold_inputs = [
+        str(probe.seq) + "&" + str(Seq(probe.seq).reverse_complement()) for probe in probes]
+    result = subprocess.check_output(
+        ["RNAcofold", "--jobs=1",
+         "-a", "-d2", "--noLP", "--noPS",
+         "--output-format=D"],
+        input="\n".join(cofold_inputs).encode())
+    reader = csv.reader(result.decode().splitlines())
+    next(reader, None) # Skip header
+    cofolds = list(reader)
+    # Extract results from RNAcofold
+    outputs = list()
+    for probe, cofold in zip(probes, cofolds):
+        outputs.append(Probe(
+            probe.mfe, probe.gc, probe.tm, probe.seq,
+            # Note: Two columns were absent in the CSV header of RNAcofold v2.5.1,
+            # so we only use integer to index this table.
+            round(float(cofold[9]), 2), round(float(cofold[10]), 2),
+            round(float(cofold[11]), 2), round(float(cofold[12]), 2),
+            round(float(cofold[13]), 2)
+        ))
+    
+    return outputs
 
 def predictRNAFold(kmers):
     probes = list()
     for kmer in kmers:
         pred = RNA.fold(kmer.seq)
-        probes.append(Probe(round(pred[1], 2), kmer.gc, kmer.tm, kmer.seq, pred[0]))
-
+        probes.append(Probe(round(pred[1], 2), kmer.gc, kmer.tm, kmer.seq,
+                            0, 0, 0, 0, 0))
+    probes = runRNACofold(probes)
     return probes
 
 def chunks(lst, n):
@@ -24,8 +55,8 @@ def chunks(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
 
-def flatten(l):
-    return [item for sublist in l for item in sublist]
+def flatten(lst):
+    return [item for sublist in lst for item in sublist]
 
 def main():
     userInput = argparse.ArgumentParser("Find ISH Probes")
@@ -48,7 +79,7 @@ def main():
     args = userInput.parse_args()
 
     if args.header:
-        sys.stdout.write("seqid,mfe,gc,tm,kmer,ss\n")
+        sys.stdout.write("Seq_ID,MFE,GC,TM,AB_Heterodimer,AA_Homodimer,BB_Homodimer,A_Monomer,B_Monomer,K-mer\n")
 
     for seq_record in SeqIO.parse(args.file, 'fasta'):
         block = str(seq_record.seq).upper()
@@ -62,9 +93,9 @@ def main():
         # extend beyond duplexes of ~60 bp, so the Tm values at 120 would not
         # be accurate.
         probes = [Probe(
-            None, round(GC(kmer), 2),
+            None, round(gc_fraction(kmer) * 100, 2),
             round(MeltingTemp.Tm_NN(kmer, nn_table = NNTABLE), 2),
-            kmer, None) for kmer in kmers]
+            kmer, 0, 0, 0, 0, 0) for kmer in kmers]
 
         if not args.min_gc is None:
             probes = list(filter(lambda x: x.gc > args.min_gc, probes))
@@ -72,8 +103,11 @@ def main():
             probes = list(filter(lambda x: x.gc < args.max_gc, probes))
 
         # Parallel computing
-        with futures.ProcessPoolExecutor(args.process) as executor:
-            res = executor.map(predictRNAFold, list(chunks(probes, args.process)))
+        if args.process > 1:
+            with futures.ProcessPoolExecutor(args.process) as executor:
+                res = executor.map(predictRNAFold, list(chunks(probes, args.process)))
+        else:
+            res = predictRNAFold(probes)
 
         # Combine and sort results
         probes = flatten(res)
@@ -83,10 +117,17 @@ def main():
 
         # Output
         for probe in probes:
-            sys.stdout.write("{seqid},{mfe},{gc},{tm},{kmer},{ss}\n".format(
-                mfe = probe.mfe, gc = probe.gc, kmer = probe.seq, ss = probe.ss,
-                seqid = seq_record.id, tm = probe.tm
+            sys.stdout.write("{seqid},{mfe},{gc},{tm},{AB},{AA},{BB},{A},{B},{kmer}\n".format(
+                mfe = probe.mfe, gc = probe.gc, kmer = probe.seq,
+                seqid = seq_record.id, tm = probe.tm,
+                AB = probe.AB, AA = probe.AA, BB = probe.BB, A = probe.A, B = probe.B
             ))
+
+    # Clean *dot5.ps files.
+    for psfile in ["AAdot5.ps", "ABdot5.ps", "Adot5.ps",
+                   "BBdot5.ps", "Bdot5.ps"]:
+        if os.path.isfile (psfile):
+            os.remove (psfile)
 
 
 if __name__ == '__main__':
